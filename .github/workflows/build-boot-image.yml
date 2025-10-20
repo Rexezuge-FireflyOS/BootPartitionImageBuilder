@@ -1,0 +1,200 @@
+name: Build Boot Image
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 1 * *"   # 每月 1 日 03:00 自动构建
+
+jobs:
+  # ======================================================
+  # 1. Build Linux kernel + Initramfs + systemd-boot setup
+  # ======================================================
+  build-boot-files:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    outputs:
+      release_tag: ${{ steps.tag_info.outputs.NEW_TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -Sy --noconfirm base-devel linux dracut systemd git
+
+      - name: Prepare build directories
+        run: |
+          mkdir -p out/boot/loader/entries
+          mkdir -p out/boot/EFI
+
+      - name: Generate initramfs
+        run: |
+          echo "==> Generating initramfs..."
+          dracut --force out/boot/initramfs-linux.img $(uname -r)
+          cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
+
+      - name: Install systemd-boot (EFI loader)
+        run: |
+          echo "==> Installing systemd-boot..."
+          bootctl --esp-path=out/boot/EFI install
+          ls -R out/boot/EFI
+
+      - name: Create systemd-boot loader configuration
+        run: |
+          cat > out/boot/loader/loader.conf <<'EOF'
+          default fireflyos
+          timeout 3
+          editor no
+          EOF
+
+          cat > out/boot/loader/entries/fireflyos.conf <<'EOF'
+          title   Firefly OS
+          linux   /vmlinuz-linux
+          initrd  /initramfs-linux.img
+          options root=/dev/sda1 rw quiet splash
+          EOF
+
+      - name: Calculate release tag
+        id: tag_info
+        run: |
+          RELEASE_DATE=$(date +'%Y-%m-%d')
+          TIMESTAMP=$(date +%s)
+          NEW_TAG="${RELEASE_DATE}-${TIMESTAMP}"
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Generated tag: $NEW_TAG"
+
+      - name: Archive boot directory
+        run: |
+          tar -czf out/boot-files.tar.gz -C out/boot .
+      
+      - name: Upload boot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-files
+          path: out/boot-files.tar.gz
+          retention-days: 7
+
+  # ======================================================
+  # 2. Create Boot Partition Image (FAT32 EFI)
+  # ======================================================
+  create-boot-image:
+    runs-on: ubuntu-latest
+    needs: build-boot-files
+    steps:
+      - name: Download boot files
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-files
+          path: out/
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools mtools parted e2fsprogs gpg
+
+      - name: Extract boot directory
+        run: |
+          mkdir -p out/boot
+          tar -xzf out/boot-files.tar.gz -C out/boot
+
+      - name: Create boot.img (FAT32 EFI partition)
+        env:
+          IMAGE_FILE: out/boot.img
+          IMAGE_SIZE_MB: 512
+          GPG_KEY: ${{ secrets.GPG_KEY }}
+        run: |
+          set -euo pipefail
+          IMAGE_FILE="$IMAGE_FILE"
+          MOUNT_DIR=$(mktemp -d)
+
+          echo "==> Creating ${IMAGE_SIZE_MB}MB FAT32 EFI image..."
+          truncate -s "${IMAGE_SIZE_MB}M" "$IMAGE_FILE"
+          sudo parted -s "$IMAGE_FILE" mklabel gpt
+          sudo parted -s "$IMAGE_FILE" mkpart ESP fat32 1MiB 100%
+          sudo parted -s "$IMAGE_FILE" set 1 boot on
+          sudo parted -s "$IMAGE_FILE" set 1 esp on
+
+          LOOP_DEV=$(sudo losetup -f --show -P "$IMAGE_FILE")
+          PART_DEV="${LOOP_DEV}p1"
+          sudo mkfs.vfat -F32 -n EFI "$PART_DEV"
+          sudo mount "$PART_DEV" "$MOUNT_DIR"
+
+          echo "==> Copying boot files into EFI partition..."
+          sudo cp -r out/boot/* "$MOUNT_DIR/"
+
+          echo "==> Unmounting and finalizing..."
+          sudo umount "$MOUNT_DIR"
+          sudo losetup -d "$LOOP_DEV"
+          rm -rf "$MOUNT_DIR"
+
+          echo "==> Signing boot image..."
+          gpg --detach-sign --armor --local-user "$GPG_KEY" -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
+
+          echo "✅ Boot image created: $IMAGE_FILE"
+          ls -lh out/
+
+      - name: Upload boot image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-image
+          path: out/boot.img
+          retention-days: 7
+
+  # ======================================================
+  # 3. Release boot image
+  # ======================================================
+  release:
+    runs-on: ubuntu-latest
+    needs: create-boot-image
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download boot image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-image
+          path: out/
+
+      - name: Create and push Git tag
+        id: create_tag
+        env:
+          NEW_TAG: ${{ needs.build-boot-files.outputs.release_tag }}
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          REMOTE_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git remote set-url origin "$REMOTE_URL"
+
+          if git ls-remote --tags origin | grep -q "refs/tags/$NEW_TAG$"; then
+            echo "⚠️ Tag $NEW_TAG already exists. Skipping tag creation."
+            echo "tag_created=false" >> $GITHUB_OUTPUT
+          else
+            git tag -a "$NEW_TAG" -m "Boot image release for $NEW_TAG"
+            git push origin "$NEW_TAG"
+            echo "✅ Tag $NEW_TAG created successfully."
+            echo "tag_created=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release with Boot Image
+        if: steps.create_tag.outputs.tag_created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/boot.img
+          tag_name: ${{ needs.build-boot-files.outputs.release_tag }}
+          name: "Boot Image - ${{ needs.build-boot-files.outputs.release_tag }}"
+          body: |
+            ## Boot Partition Image Release
+            This release includes the EFI boot partition containing:
+            - Linux Kernel (vmlinuz-linux)
+            - Initramfs (dracut)
+            - systemd-boot EFI loader
+
+            Suitable for integration with your rootfs image.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
