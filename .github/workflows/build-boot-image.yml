@@ -127,6 +127,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools parted e2fsprogs gpg
 
+      - name: Setup GPG on Host
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" > /tmp/gpg.key
+          gpg --batch --import /tmp/gpg.key
+          rm -f /tmp/gpg.key
+
       - name: Extract boot directory
         run: |
           mkdir -p out/boot
