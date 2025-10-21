@@ -31,7 +31,19 @@ jobs:
       - name: Generate initramfs
         run: |
           echo "==> Generating initramfs..."
-          dracut --force out/boot/initramfs-linux.img $(uname -r)
+          
+          # 1. 获取 Arch Linux 内核的实际版本号 (module directory name)
+          #    Arch Linux 的模块通常在 /usr/lib/modules/ 下
+          KERNEL_RELEASE=$(ls /usr/lib/modules/ | head -n 1)
+          
+          # 2. 打印版本号进行调试
+          echo "Detected Arch Kernel Release (for dracut): $KERNEL_RELEASE"
+
+          # 3. 使用正确的版本号执行 dracut
+          #    例如：dracut --force out/boot/initramfs-linux.img 6.x.x-arch1-1
+          dracut --force out/boot/initramfs-linux.img "$KERNEL_RELEASE"
+          
+          # 4. 复制内核文件
           cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
 
       - name: Install systemd-boot (EFI loader)
