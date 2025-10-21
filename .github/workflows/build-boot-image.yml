@@ -46,10 +46,32 @@ jobs:
           # 4. 复制内核文件
           cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
 
-      - name: Install systemd-boot (EFI loader)
+      - name: Install systemd-boot (EFI loader) - Manual Copy
         run: |
-          echo "==> Installing systemd-boot..."
-          bootctl --esp-path=out/boot/EFI install
+          echo "==> Manually preparing systemd-boot directory structure..."
+          
+          # Arch Linux systemd-bootx64.efi 的标准路径
+          SYSTEMD_BOOT_EFI="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+          
+          # systemd-boot 在 ESP 上期望的路径（标准安装）
+          TARGET_EFI_DIR="out/boot/EFI/EFI/systemd"
+          
+          # BIOS/EFI 引导程序（启动管理器）的通用路径（用于兼容性/Fallback）
+          TARGET_BOOT_DIR="out/boot/EFI/EFI/BOOT"
+
+          # 确保目标目录结构存在
+          mkdir -p "$TARGET_EFI_DIR"
+          mkdir -p "$TARGET_BOOT_DIR"
+          
+          # 1. 复制 systemd-boot.efi 到其标准位置
+          cp "$SYSTEMD_BOOT_EFI" "$TARGET_EFI_DIR/systemd-bootx64.efi"
+          
+          # 2. 复制 systemd-boot.efi 作为 EFI 通用启动文件
+          #    (UEFI 固件通常会尝试加载 \EFI\BOOT\bootx64.efi)
+          cp "$SYSTEMD_BOOT_EFI" "$TARGET_BOOT_DIR/bootx64.efi"
+          
+          # 3. 确认所有文件已复制
+          echo "✅ systemd-boot files copied."
           ls -R out/boot/EFI
 
       - name: Create systemd-boot loader configuration
