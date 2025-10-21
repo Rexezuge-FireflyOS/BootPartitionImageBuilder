@@ -136,7 +136,7 @@ jobs:
         env:
           IMAGE_FILE: out/boot.img
           IMAGE_SIZE_MB: 512
-          GPG_KEY: ${{ secrets.GPG_KEY }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
         run: |
           set -euo pipefail
           IMAGE_FILE="$IMAGE_FILE"
@@ -163,7 +163,7 @@ jobs:
           rm -rf "$MOUNT_DIR"
 
           echo "==> Signing boot image..."
-          gpg --detach-sign --armor --local-user "$GPG_KEY" -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
+          gpg --detach-sign --armor --local-user "$GPG_KEY_ID" -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
 
           echo "✅ Boot image created: $IMAGE_FILE"
           ls -lh out/
