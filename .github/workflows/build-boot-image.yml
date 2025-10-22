@@ -83,7 +83,7 @@ jobs:
           retention-days: 7
 
   # ======================================================
-  # 2. Create Boot Partition Image (FAT32 EFI)
+  # 2. Create Boot Partition Image (FAT32 EFI, dynamic size)
   # ======================================================
   create-boot-image:
     runs-on: ubuntu-latest
@@ -100,7 +100,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools parted rsync gpg
 
-      - name: Setup GPG on Host
+      - name: Setup GPG
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" > /tmp/gpg.key
           gpg --batch --import /tmp/gpg.key
@@ -111,20 +111,36 @@ jobs:
           mkdir -p out/boot
           tar -xzf out/boot-files.tar.gz -C out/boot
 
-      - name: Create boot.img (FAT32 EFI)
+      - name: Create dynamically sized FAT32 EFI image
         env:
           IMAGE_FILE: out/boot.img
-          IMAGE_SIZE_MB: 512
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
         run: |
           set -euo pipefail
+
           IMAGE_FILE="$IMAGE_FILE"
           MOUNT_DIR=$(mktemp -d)
+          echo "==> Calculating required image size..."
 
-          echo "==> Creating ${IMAGE_SIZE_MB}MB FAT32 EFI image..."
-          truncate -s "${IMAGE_SIZE_MB}M" "$IMAGE_FILE"
+          # 获取 boot 目录实际占用字节数
+          BOOT_SIZE_BYTES=$(du -sb out/boot | awk '{print $1}')
+          BOOT_SIZE_MB=$(( (BOOT_SIZE_BYTES + 1024*1024 - 1) / (1024*1024) ))
+          SAFETY_MARGIN_MB=64
+          MIN_SIZE_MB=256
+          TOTAL_SIZE_MB=$(( BOOT_SIZE_MB + SAFETY_MARGIN_MB ))
 
-          echo "==> Partitioning image (GPT + ESP)..."
+          # 确保镜像不小于 256MB
+          if [ "$TOTAL_SIZE_MB" -lt "$MIN_SIZE_MB" ]; then
+            TOTAL_SIZE_MB=$MIN_SIZE_MB
+          fi
+
+          echo "Boot content size: ${BOOT_SIZE_MB} MB"
+          echo "Allocated image size: ${TOTAL_SIZE_MB} MB"
+
+          echo "==> Creating FAT32 EFI image (${TOTAL_SIZE_MB}MB)..."
+          truncate -s "${TOTAL_SIZE_MB}M" "$IMAGE_FILE"
+
+          echo "==> Partitioning (GPT + ESP)..."
           sudo parted -s "$IMAGE_FILE" mklabel gpt
           sudo parted -s "$IMAGE_FILE" mkpart ESP fat32 1MiB 100%
           sudo parted -s "$IMAGE_FILE" set 1 boot on
@@ -142,7 +158,7 @@ jobs:
           echo "==> Copying boot files..."
           sudo rsync -aHAX out/boot/ "$MOUNT_DIR/"
 
-          echo "==> Syncing and unmounting..."
+          echo "==> Sync and unmount..."
           sudo sync
           sudo umount "$MOUNT_DIR"
           sudo losetup -d "$LOOP_DEV"
@@ -153,7 +169,7 @@ jobs:
               --local-user "$GPG_KEY_ID" \
               -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
 
-          echo "✅ Boot image created: $IMAGE_FILE"
+          echo "✅ Boot image created and signed successfully."
           ls -lh out/
 
       - name: Upload boot image artifact
@@ -217,11 +233,12 @@ jobs:
           body: |
             ## Boot Partition Image Release
             **Filesystem:** FAT32 (EFI System Partition)
+            **Dynamic Size:** Automatically adjusted based on /boot content
             **Included Components:**
             - Linux Kernel (vmlinuz-linux)
             - Initramfs (dracut)
             - systemd-boot EFI loader
 
-            This FAT32 EFI image is designed for compatibility with standard UEFI boot environments.
+            This FAT32 EFI image is auto-sized and optimized for UEFI systems.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
