@@ -31,46 +31,19 @@ jobs:
       - name: Generate initramfs
         run: |
           echo "==> Generating initramfs..."
-          
-          # 1. 获取 Arch Linux 内核的实际版本号 (module directory name)
-          #    Arch Linux 的模块通常在 /usr/lib/modules/ 下
           KERNEL_RELEASE=$(ls /usr/lib/modules/ | head -n 1)
-          
-          # 2. 打印版本号进行调试
-          echo "Detected Arch Kernel Release (for dracut): $KERNEL_RELEASE"
-
-          # 3. 使用正确的版本号执行 dracut
-          #    例如：dracut --force out/boot/initramfs-linux.img 6.x.x-arch1-1
+          echo "Detected Arch Kernel Release: $KERNEL_RELEASE"
           dracut --force out/boot/initramfs-linux.img "$KERNEL_RELEASE"
-          
-          # 4. 复制内核文件
           cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
 
-      - name: Install systemd-boot (EFI loader) - Manual Copy
+      - name: Install systemd-boot (EFI loader)
         run: |
-          echo "==> Manually preparing systemd-boot directory structure..."
-          
-          # Arch Linux systemd-bootx64.efi 的标准路径
           SYSTEMD_BOOT_EFI="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-          
-          # systemd-boot 在 ESP 上期望的路径（标准安装）
           TARGET_EFI_DIR="out/boot/EFI/EFI/systemd"
-          
-          # BIOS/EFI 引导程序（启动管理器）的通用路径（用于兼容性/Fallback）
           TARGET_BOOT_DIR="out/boot/EFI/EFI/BOOT"
-
-          # 确保目标目录结构存在
-          mkdir -p "$TARGET_EFI_DIR"
-          mkdir -p "$TARGET_BOOT_DIR"
-          
-          # 1. 复制 systemd-boot.efi 到其标准位置
+          mkdir -p "$TARGET_EFI_DIR" "$TARGET_BOOT_DIR"
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_EFI_DIR/systemd-bootx64.efi"
-          
-          # 2. 复制 systemd-boot.efi 作为 EFI 通用启动文件
-          #    (UEFI 固件通常会尝试加载 \EFI\BOOT\bootx64.efi)
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_BOOT_DIR/bootx64.efi"
-          
-          # 3. 确认所有文件已复制
           echo "✅ systemd-boot files copied."
           ls -R out/boot/EFI
 
@@ -125,7 +98,7 @@ jobs:
       - name: Install image tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dosfstools mtools parted e2fsprogs gpg
+          sudo apt-get install -y dosfstools mtools parted rsync gpg
 
       - name: Setup GPG on Host
         run: |
@@ -138,7 +111,7 @@ jobs:
           mkdir -p out/boot
           tar -xzf out/boot-files.tar.gz -C out/boot
 
-      - name: Create boot.img (FAT32 EFI partition)
+      - name: Create boot.img (FAT32 EFI)
         env:
           IMAGE_FILE: out/boot.img
           IMAGE_SIZE_MB: 512
@@ -150,6 +123,8 @@ jobs:
 
           echo "==> Creating ${IMAGE_SIZE_MB}MB FAT32 EFI image..."
           truncate -s "${IMAGE_SIZE_MB}M" "$IMAGE_FILE"
+
+          echo "==> Partitioning image (GPT + ESP)..."
           sudo parted -s "$IMAGE_FILE" mklabel gpt
           sudo parted -s "$IMAGE_FILE" mkpart ESP fat32 1MiB 100%
           sudo parted -s "$IMAGE_FILE" set 1 boot on
@@ -157,19 +132,26 @@ jobs:
 
           LOOP_DEV=$(sudo losetup -f --show -P "$IMAGE_FILE")
           PART_DEV="${LOOP_DEV}p1"
+
+          echo "==> Formatting partition as FAT32..."
           sudo mkfs.vfat -F32 -n EFI "$PART_DEV"
+
+          echo "==> Mounting EFI partition..."
           sudo mount "$PART_DEV" "$MOUNT_DIR"
 
-          echo "==> Copying boot files into EFI partition..."
-          sudo cp -r out/boot/* "$MOUNT_DIR/"
+          echo "==> Copying boot files..."
+          sudo rsync -aHAX out/boot/ "$MOUNT_DIR/"
 
-          echo "==> Unmounting and finalizing..."
+          echo "==> Syncing and unmounting..."
+          sudo sync
           sudo umount "$MOUNT_DIR"
           sudo losetup -d "$LOOP_DEV"
           rm -rf "$MOUNT_DIR"
 
           echo "==> Signing boot image..."
-          gpg --detach-sign --armor --local-user "$GPG_KEY_ID" -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
+          gpg --batch --yes --detach-sign --armor \
+              --local-user "$GPG_KEY_ID" \
+              -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
 
           echo "✅ Boot image created: $IMAGE_FILE"
           ls -lh out/
@@ -178,7 +160,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boot-image
-          path: out/boot.img
+          path: |
+            out/boot.img
+            out/boot.img.sig
           retention-days: 7
 
   # ======================================================
@@ -225,16 +209,19 @@ jobs:
         if: steps.create_tag.outputs.tag_created == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: out/boot.img
+          files: |
+            out/boot.img
+            out/boot.img.sig
           tag_name: ${{ needs.build-boot-files.outputs.release_tag }}
           name: "Boot Image - ${{ needs.build-boot-files.outputs.release_tag }}"
           body: |
             ## Boot Partition Image Release
-            This release includes the EFI boot partition containing:
+            **Filesystem:** FAT32 (EFI System Partition)
+            **Included Components:**
             - Linux Kernel (vmlinuz-linux)
             - Initramfs (dracut)
             - systemd-boot EFI loader
 
-            Suitable for integration with your rootfs image.
+            This FAT32 EFI image is designed for compatibility with standard UEFI boot environments.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
