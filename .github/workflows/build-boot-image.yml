@@ -1,4 +1,4 @@
-name: Build Boot Image
+name: Build Boot Image (FAT32 Only)
 
 on:
   workflow_dispatch:
@@ -32,20 +32,20 @@ jobs:
         run: |
           echo "==> Generating initramfs..."
           KERNEL_RELEASE=$(ls /usr/lib/modules/ | head -n 1)
-          echo "Detected Arch Kernel Release: $KERNEL_RELEASE"
+          echo "Detected Arch Kernel Release (for dracut): $KERNEL_RELEASE"
           dracut --force out/boot/initramfs-linux.img "$KERNEL_RELEASE"
           cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
 
       - name: Install systemd-boot (EFI loader)
         run: |
+          echo "==> Copying systemd-boot EFI loader..."
           SYSTEMD_BOOT_EFI="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
           TARGET_EFI_DIR="out/boot/EFI/EFI/systemd"
           TARGET_BOOT_DIR="out/boot/EFI/EFI/BOOT"
           mkdir -p "$TARGET_EFI_DIR" "$TARGET_BOOT_DIR"
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_EFI_DIR/systemd-bootx64.efi"
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_BOOT_DIR/bootx64.efi"
-          echo "✅ systemd-boot files copied."
-          ls -R out/boot/EFI
+          echo "✅ systemd-boot EFI loader copied."
 
       - name: Create systemd-boot loader configuration
         run: |
@@ -83,7 +83,7 @@ jobs:
           retention-days: 7
 
   # ======================================================
-  # 2. Create Boot Partition Image (FAT32 EFI, dynamic size)
+  # 2. Create Boot Image (Pure FAT32 filesystem only)
   # ======================================================
   create-boot-image:
     runs-on: ubuntu-latest
@@ -98,9 +98,9 @@ jobs:
       - name: Install image tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dosfstools mtools parted rsync gpg
+          sudo apt-get install -y dosfstools mtools gpg rsync
 
-      - name: Setup GPG
+      - name: Setup GPG on Host
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" > /tmp/gpg.key
           gpg --batch --import /tmp/gpg.key
@@ -111,25 +111,21 @@ jobs:
           mkdir -p out/boot
           tar -xzf out/boot-files.tar.gz -C out/boot
 
-      - name: Create dynamically sized FAT32 EFI image
+      - name: Create FAT32 boot image (no GPT)
         env:
           IMAGE_FILE: out/boot.img
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
         run: |
           set -euo pipefail
-
           IMAGE_FILE="$IMAGE_FILE"
           MOUNT_DIR=$(mktemp -d)
-          echo "==> Calculating required image size..."
 
-          # 获取 boot 目录实际占用字节数
+          echo "==> Calculating required image size..."
           BOOT_SIZE_BYTES=$(du -sb out/boot | awk '{print $1}')
           BOOT_SIZE_MB=$(( (BOOT_SIZE_BYTES + 1024*1024 - 1) / (1024*1024) ))
           SAFETY_MARGIN_MB=64
           MIN_SIZE_MB=256
           TOTAL_SIZE_MB=$(( BOOT_SIZE_MB + SAFETY_MARGIN_MB ))
-
-          # 确保镜像不小于 256MB
           if [ "$TOTAL_SIZE_MB" -lt "$MIN_SIZE_MB" ]; then
             TOTAL_SIZE_MB=$MIN_SIZE_MB
           fi
@@ -137,31 +133,19 @@ jobs:
           echo "Boot content size: ${BOOT_SIZE_MB} MB"
           echo "Allocated image size: ${TOTAL_SIZE_MB} MB"
 
-          echo "==> Creating FAT32 EFI image (${TOTAL_SIZE_MB}MB)..."
+          echo "==> Creating FAT32 filesystem image..."
           truncate -s "${TOTAL_SIZE_MB}M" "$IMAGE_FILE"
+          mkfs.vfat -F32 -n EFI "$IMAGE_FILE"
 
-          echo "==> Partitioning (GPT + ESP)..."
-          sudo parted -s "$IMAGE_FILE" mklabel gpt
-          sudo parted -s "$IMAGE_FILE" mkpart ESP fat32 1MiB 100%
-          sudo parted -s "$IMAGE_FILE" set 1 boot on
-          sudo parted -s "$IMAGE_FILE" set 1 esp on
+          echo "==> Mounting image..."
+          sudo mount -o loop "$IMAGE_FILE" "$MOUNT_DIR"
 
-          LOOP_DEV=$(sudo losetup -f --show -P "$IMAGE_FILE")
-          PART_DEV="${LOOP_DEV}p1"
-
-          echo "==> Formatting partition as FAT32..."
-          sudo mkfs.vfat -F32 -n EFI "$PART_DEV"
-
-          echo "==> Mounting EFI partition..."
-          sudo mount "$PART_DEV" "$MOUNT_DIR"
-
-          echo "==> Copying boot files..."
+          echo "==> Copying boot files into FAT32 image..."
           sudo rsync -rtv --no-perms --no-owner --no-group out/boot/ "$MOUNT_DIR/"
 
           echo "==> Sync and unmount..."
           sudo sync
           sudo umount "$MOUNT_DIR"
-          sudo losetup -d "$LOOP_DEV"
           rm -rf "$MOUNT_DIR"
 
           echo "==> Signing boot image..."
@@ -169,7 +153,7 @@ jobs:
               --local-user "$GPG_KEY_ID" \
               -o "${IMAGE_FILE}.sig" "$IMAGE_FILE"
 
-          echo "✅ Boot image created and signed successfully."
+          echo "✅ Pure FAT32 boot image created and signed successfully."
           ls -lh out/
 
       - name: Upload boot image artifact
@@ -229,16 +213,14 @@ jobs:
             out/boot.img
             out/boot.img.sig
           tag_name: ${{ needs.build-boot-files.outputs.release_tag }}
-          name: "Boot Image - ${{ needs.build-boot-files.outputs.release_tag }}"
+          name: "Boot Image (FAT32) - ${{ needs.build-boot-files.outputs.release_tag }}"
           body: |
-            ## Boot Partition Image Release
-            **Filesystem:** FAT32 (EFI System Partition)
-            **Dynamic Size:** Automatically adjusted based on /boot content
-            **Included Components:**
+            ## Boot Partition Image (FAT32 Only)
+            This release includes a pure FAT32 EFI boot image containing:
             - Linux Kernel (vmlinuz-linux)
             - Initramfs (dracut)
             - systemd-boot EFI loader
 
-            This FAT32 EFI image is auto-sized and optimized for UEFI systems.
+            ✅ Safe to dd directly into an existing EFI partition, e.g. `/dev/sda1`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
