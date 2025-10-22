@@ -156,7 +156,7 @@ jobs:
           sudo mount "$PART_DEV" "$MOUNT_DIR"
 
           echo "==> Copying boot files..."
-          sudo rsync -aHAX out/boot/ "$MOUNT_DIR/"
+          sudo rsync -rtv --no-perms --no-owner --no-group out/boot/ "$MOUNT_DIR/"
 
           echo "==> Sync and unmount..."
           sudo sync
