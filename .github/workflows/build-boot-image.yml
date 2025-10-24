@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pacman -Sy --noconfirm base-devel linux dracut systemd git
+          pacman -Sy --noconfirm base-devel linux linux-firmware dracut systemd git
 
       - name: Prepare build directories
         run: |
