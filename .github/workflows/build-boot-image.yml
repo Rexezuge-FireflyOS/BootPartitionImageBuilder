@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pacman -Sy --noconfirm base-devel linux linux-firmware dracut systemd git
+          pacman -Sy --noconfirm base-devel linux-lts linux-firmware dracut systemd git
 
       - name: Prepare build directories
         run: |
@@ -31,10 +31,11 @@ jobs:
       - name: Generate initramfs
         run: |
           echo "==> Generating initramfs..."
-          KERNEL_RELEASE=$(ls /usr/lib/modules/ | head -n 1)
+          KERNEL_RELEASE=$(ls /usr/lib/modules/ | grep lts | head -n 1)
           echo "Detected Arch Kernel Release (for dracut): $KERNEL_RELEASE"
-          dracut --force out/boot/initramfs-linux.img "$KERNEL_RELEASE"
-          cp /boot/vmlinuz-linux out/boot/vmlinuz-linux
+          dracut --force out/boot/initramfs-linux-lts.img "$KERNEL_RELEASE"
+          cp /boot/vmlinuz-linux-lts out/boot/vmlinuz-linux-lts
+
 
       - name: Install systemd-boot (EFI loader)
         run: |
@@ -57,8 +58,8 @@ jobs:
 
           cat > out/boot/loader/entries/fireflyos.conf <<'EOF'
           title   Firefly OS
-          linux   /vmlinuz-linux
-          initrd  /initramfs-linux.img
+          linux   /vmlinuz-linux-lts
+          initrd  /initramfs-linux-lts.img
           options root=LABEL=FIREFLYOS_ROOT1 rw
           EOF
 
