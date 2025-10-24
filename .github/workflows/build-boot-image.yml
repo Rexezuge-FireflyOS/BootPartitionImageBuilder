@@ -59,7 +59,7 @@ jobs:
           title   Firefly OS
           linux   /vmlinuz-linux
           initrd  /initramfs-linux.img
-          options root=/dev/sda1 rw quiet splash
+          options root=/dev/sda2 rw
           EOF
 
       - name: Calculate release tag
