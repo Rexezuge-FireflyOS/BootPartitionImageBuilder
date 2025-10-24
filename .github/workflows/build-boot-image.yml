@@ -1,4 +1,4 @@
-name: Build Boot Image (FAT32 Only)
+name: Build Boot Image
 
 on:
   workflow_dispatch:
@@ -40,8 +40,8 @@ jobs:
         run: |
           echo "==> Copying systemd-boot EFI loader..."
           SYSTEMD_BOOT_EFI="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-          TARGET_EFI_DIR="out/boot/EFI/EFI/systemd"
-          TARGET_BOOT_DIR="out/boot/EFI/EFI/BOOT"
+          TARGET_EFI_DIR="out/boot/EFI/systemd"
+          TARGET_BOOT_DIR="out/boot/EFI/BOOT"
           mkdir -p "$TARGET_EFI_DIR" "$TARGET_BOOT_DIR"
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_EFI_DIR/systemd-bootx64.efi"
           cp "$SYSTEMD_BOOT_EFI" "$TARGET_BOOT_DIR/bootx64.efi"
